@@ -32,6 +32,12 @@ GO
 -- Very few are 'Cancelled' (100)
 
 -- Completed orders (45,000)
+WITH Numbers
+AS (
+    SELECT ROW_NUMBER() OVER (ORDER BY v1.value, v2.value) AS number
+    FROM GENERATE_SERIES(1, 150) v1
+    CROSS APPLY GENERATE_SERIES(1, 300) v2
+)
 INSERT INTO dbo.OrdersForSniffing (OrderID, CustomerID, OrderDate, Amount, Status, Region)
 SELECT 
     number,
@@ -45,46 +51,41 @@ SELECT
         WHEN 2 THEN 'East'
         ELSE 'West'
     END
-FROM master.dbo.spt_values v1
-CROSS JOIN master.dbo.spt_values v2
-WHERE v1.type = 'P' AND v1.number < 150
-  AND v2.type = 'P' AND v2.number < 300;
+FROM Numbers;
 GO
 
 -- Pending orders (1,000)
 INSERT INTO dbo.OrdersForSniffing (OrderID, CustomerID, OrderDate, Amount, Status, Region)
 SELECT 
-    50000 + number,
-    (number % 5000) + 1,
-    DATEADD(DAY, -(number % 30), GETDATE()),
-    (number % 500) + 50.00,
+    50000 + value,
+    (value % 5000) + 1,
+    DATEADD(DAY, -(value % 30), GETDATE()),
+    (value % 500) + 50.00,
     'Pending',
-    CASE (number % 4)
+    CASE (value % 4)
         WHEN 0 THEN 'North'
         WHEN 1 THEN 'South'
         WHEN 2 THEN 'East'
         ELSE 'West'
     END
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number BETWEEN 1 AND 1000;
+FROM GENERATE_SERIES(1, 1000);
 GO
 
 -- Cancelled orders (100)
 INSERT INTO dbo.OrdersForSniffing (OrderID, CustomerID, OrderDate, Amount, Status, Region)
 SELECT 
-    60000 + number,
-    (number % 5000) + 1,
-    DATEADD(DAY, -(number % 365), GETDATE()),
-    (number % 200) + 25.00,
+    60000 + value,
+    (value % 5000) + 1,
+    DATEADD(DAY, -(value % 365), GETDATE()),
+    (value % 200) + 25.00,
     'Cancelled',
-    CASE (number % 4)
+    CASE (value % 4)
         WHEN 0 THEN 'North'
         WHEN 1 THEN 'South'
         WHEN 2 THEN 'East'
         ELSE 'West'
     END
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number BETWEEN 1 AND 100;
+FROM GENERATE_SERIES(1, 100);
 GO
 
 -- Create indexes
