@@ -55,8 +55,7 @@ SELECT
         WHEN 0 THEN 'Inactive'
         ELSE 'Active'
     END
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number < 1000;
+FROM GENERATE_SERIES(1, 1000);
 GO
 
 -- Insert sample orders (50,000 orders)
@@ -78,6 +77,7 @@ BEGIN
     SET @i = @i + 1;
 END
 GO
+SELECT * FROM Orders;
 
 -- ============================================================================
 -- 1. TABLE SCAN vs INDEX SEEK
@@ -99,15 +99,28 @@ SELECT * FROM dbo.Orders WHERE OrderID = 25000;
 -- Look for: Clustered Index Seek operator
 GO
 
+-- Create nonclustered index (not covering)
+CREATE NONCLUSTERED INDEX IX_Orders_CustomerID 
+ON dbo.Orders(CustomerID);
+GO
+
 -- SCAN: Range that returns many rows
-SELECT * FROM dbo.Orders WHERE OrderID BETWEEN 1 AND 40000;
+SELECT * FROM dbo.Orders WHERE CustomerID BETWEEN 1 AND 999;
 -- Look for: Clustered Index Scan (optimizer chose scan over seek)
 GO
 
 -- SEEK: Range with few rows
-SELECT * FROM dbo.Orders WHERE OrderID BETWEEN 1 AND 100;
--- Look for: Clustered Index Seek
+SELECT * FROM dbo.Orders WHERE CustomerID BETWEEN 1 AND 2;
+-- Look for: Nonclustered Index Seek, Key Lookup
 GO
+
+
+SELECT
+    CustomerID,
+    OrderID
+FROM dbo.Orders
+ORDER BY CustomerID,
+    OrderID;
 
 SET STATISTICS IO OFF;
 SET STATISTICS TIME OFF;
@@ -117,10 +130,10 @@ GO
 -- 2. KEY LOOKUP (RID Lookup for heaps)
 -- ============================================================================
 
--- Create nonclustered index (not covering)
-CREATE NONCLUSTERED INDEX IX_Orders_CustomerID 
-ON dbo.Orders(CustomerID);
-GO
+---- Create nonclustered index (not covering)
+--CREATE NONCLUSTERED INDEX IX_Orders_CustomerID 
+--ON dbo.Orders(CustomerID);
+--GO
 
 SET STATISTICS IO ON;
 
@@ -179,7 +192,7 @@ GO
 SET STATISTICS IO ON;
 
 -- Query requires sort (no supporting index)
-SELECT * 
+SELECT TOP (10) * 
 FROM dbo.Orders
 WHERE Status = 'Completed'
 ORDER BY OrderDate DESC;
@@ -192,7 +205,7 @@ ON dbo.Orders(Status, OrderDate DESC);
 GO
 
 -- Same query, no sort needed
-SELECT OrderID, CustomerID, OrderDate, Amount, Status
+SELECT TOP (10) OrderID, CustomerID, OrderDate, Amount, Status
 FROM dbo.Orders
 WHERE Status = 'Completed'
 ORDER BY OrderDate DESC;
@@ -214,9 +227,9 @@ WHERE Status = 'Pending' AND OrderDate > '2025-01-01';
 GO
 
 -- The missing index hint might suggest something like:
--- CREATE NONCLUSTERED INDEX IX_Suggested
--- ON dbo.Orders(Status, OrderDate)
--- INCLUDE (Amount);
+CREATE NONCLUSTERED INDEX IX_Suggested
+ON dbo.Orders(Status, OrderDate)
+INCLUDE (Amount);
 
 -- ============================================================================
 -- 6. PARALLELISM
@@ -254,12 +267,16 @@ INSERT INTO dbo.Orders (OrderID, CustomerID, OrderDate, Amount, Status)
 SELECT 
     50000 + ROW_NUMBER() OVER (ORDER BY (SELECT NULL)),
     1,  -- All orders for customer 1
-    DATEADD(DAY, -number, GETDATE()),
+    DATEADD(DAY, -value, GETDATE()),
     100.00,
     'VIPOrder'
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number < 5000;
+FROM GENERATE_SERIES(1, 5000);
 GO
+
+SELECT CustomerID, COUNT(1) FROM dbo.Orders
+GROUP BY CustomerID
+ORDER BY CustomerID;
+
 
 -- Query without updated statistics
 SELECT * FROM dbo.Orders WHERE CustomerID = 1;
@@ -308,9 +325,8 @@ ON dbo.ProductCodes(ProductCode);
 GO
 
 INSERT INTO dbo.ProductCodes (ProductID, ProductCode)
-SELECT number, 'PROD' + RIGHT('00000' + CAST(number AS VARCHAR), 5)
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number < 10000;
+SELECT value, 'PROD' + RIGHT('00000' + CAST(value AS VARCHAR), 5)
+FROM GENERATE_SERIES(1, 10000);
 GO
 
 -- Query with implicit conversion (NVARCHAR literal on VARCHAR column)
@@ -347,8 +363,11 @@ SET STATISTICS TIME OFF;
 SET STATISTICS IO OFF;
 GO
 
+CREATE INDEX IX_Orders_OrderDate_INCLUDE ON dbo.Orders (OrderDate) INCLUDE (CustomerID, Amount, Status);
+GO
+
 PRINT '========== AFTER OPTIMIZATION ==========';
--- Good query: Sargable predicate, specific columns
+-- Good query: Sargable predicate, specific columns included in the index
 SET STATISTICS IO ON;
 SET STATISTICS TIME ON;
 

@@ -8,6 +8,16 @@ Topics: Heap, B+-Tree, Fragmentation, Rebuild vs. Reorganize
 USE master;
 GO
 
+IF EXISTS (SELECT name FROM sys.databases WHERE name = 'PerformanceDemo')
+BEGIN
+
+    ALTER DATABASE PerformanceDemo SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+
+    DROP DATABASE IF EXISTS PerformanceDemo;
+
+END;
+GO
+
 -- Create demo database if it doesn't exist
 IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'PerformanceDemo')
 BEGIN
@@ -149,10 +159,9 @@ GO
 -- Insert sequential data (no fragmentation initially)
 INSERT INTO dbo.FragmentationDemo (ID, DataColumn)
 SELECT 
-    ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) * 2,  -- Even numbers only
+    10000 + ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) * 2,  -- Even numbers only
     REPLICATE('A', 2000)
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number < 5000;
+FROM GENERATE_SERIES(1, 5000);
 GO
 
 -- Check initial fragmentation (should be low)
@@ -172,10 +181,9 @@ GO
 -- Cause fragmentation by inserting in the middle (odd numbers)
 INSERT INTO dbo.FragmentationDemo (ID, DataColumn)
 SELECT 
-    (ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) * 2) - 1,  -- Odd numbers
+    10000 + (ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) * 2) - 1,  -- Odd numbers
     REPLICATE('B', 2000)
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number < 5000;
+FROM GENERATE_SERIES(1, 5000);
 GO
 
 -- Check fragmentation after inserts (should be high)
@@ -196,7 +204,7 @@ GO
 -- ============================================================================
 
 -- REORGANIZE (online operation, minimal locking)
-ALTER INDEX PK__Fragment__3214EC271234ABCD ON dbo.FragmentationDemo REORGANIZE;
+ALTER INDEX PK__Fragment__3214EC274265F13C ON dbo.FragmentationDemo REORGANIZE;
 GO
 
 -- Or use system-generated name
@@ -270,14 +278,14 @@ BEGIN
         -- REBUILD for high fragmentation
         SET @SQL = N'ALTER INDEX ' + QUOTENAME(@IndexName) + N' ON ' + QUOTENAME(@TableName) + N' REBUILD;';
         PRINT 'Rebuilding: ' + @SQL;
-        -- EXEC sp_executesql @SQL;  -- Uncomment to execute
+        EXEC sp_executesql @SQL;  -- Uncomment to execute
     END
     ELSE IF @Fragmentation >= 10
     BEGIN
         -- REORGANIZE for moderate fragmentation
         SET @SQL = N'ALTER INDEX ' + QUOTENAME(@IndexName) + N' ON ' + QUOTENAME(@TableName) + N' REORGANIZE;';
         PRINT 'Reorganizing: ' + @SQL;
-        -- EXEC sp_executesql @SQL;  -- Uncomment to execute
+        EXEC sp_executesql @SQL;  -- Uncomment to execute
     END
 
     FETCH NEXT FROM index_cursor INTO @TableName, @IndexName, @Fragmentation;

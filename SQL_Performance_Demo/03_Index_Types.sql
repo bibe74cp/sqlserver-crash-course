@@ -33,18 +33,17 @@ GO
 -- Insert sample data (20,000 products)
 INSERT INTO dbo.Products (ProductID, ProductName, CategoryID, Price, StockQuantity, IsActive, CreatedDate, LastModifiedDate, SupplierID, Description)
 SELECT 
-    number AS ProductID,
-    'Product ' + CAST(number AS VARCHAR(10)) AS ProductName,
-    (number % 50) + 1 AS CategoryID,
-    (number % 1000) + 9.99 AS Price,
-    (number % 500) AS StockQuantity,
-    CASE WHEN number % 10 = 0 THEN 0 ELSE 1 END AS IsActive,  -- 10% inactive
-    DATEADD(DAY, -(number % 365), GETDATE()) AS CreatedDate,
-    CASE WHEN number % 5 = 0 THEN DATEADD(DAY, -10, GETDATE()) ELSE NULL END AS LastModifiedDate,
-    (number % 100) + 1 AS SupplierID,
-    'Description for product ' + CAST(number AS VARCHAR(10)) AS Description
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number BETWEEN 1 AND 20000;
+    value AS ProductID,
+    'Product ' + CAST(value AS VARCHAR(10)) AS ProductName,
+    (value % 50) + 1 AS CategoryID,
+    (value % 1000) + 9.99 AS Price,
+    (value % 500) AS StockQuantity,
+    CASE WHEN value % 10 = 0 THEN 0 ELSE 1 END AS IsActive,  -- 10% inactive
+    DATEADD(DAY, -(value % 365), GETDATE()) AS CreatedDate,
+    CASE WHEN value % 5 = 0 THEN DATEADD(DAY, -10, GETDATE()) ELSE NULL END AS LastModifiedDate,
+    (value % 100) + 1 AS SupplierID,
+    'Description for product ' + CAST(value AS VARCHAR(10)) AS Description
+FROM GENERATE_SERIES(1, 20000);
 GO
 
 -- ============================================================================
@@ -91,14 +90,19 @@ CREATE NONCLUSTERED INDEX IX_Products_CategoryID
 ON dbo.Products(CategoryID);
 GO
 
+DBCC FREEPROCCACHE;
+DBCC DROPCLEANBUFFERS;
+GO
+
+
 SET STATISTICS IO ON;
 
 -- Query uses nonclustered index
-SELECT ProductID, CategoryID 
+SELECT ProductID, CategoryID, ProductName
 FROM dbo.Products 
 WHERE CategoryID = 25;
--- Result: Index Seek on IX_Products_CategoryID + Key Lookup (for ProductID from clustered index)
--- Note: Key Lookup because ProductID is in clustered key
+-- Result: Index Seek on IX_Products_CategoryID
+-- Note: Key Lookup not needed because ProductID is in clustered key
 
 SET STATISTICS IO OFF;
 GO
@@ -112,12 +116,17 @@ CREATE NONCLUSTERED INDEX IX_Products_Category_Price_Name
 ON dbo.Products(CategoryID, Price, ProductName);
 GO
 
+DBCC FREEPROCCACHE;
+DBCC DROPCLEANBUFFERS;
+GO
+
 SET STATISTICS IO ON;
 
 -- Query fully covered by index (no Key Lookup)
 SELECT CategoryID, Price, ProductName
 FROM dbo.Products
-WHERE CategoryID = 25 AND Price < 100;
+--WHERE CategoryID = 25 AND Price < 100;
+WHERE CategoryID BETWEEN 25 AND 30 AND Price < 100;
 -- Result: Index Seek only, no Key Lookup!
 
 SET STATISTICS IO OFF;
@@ -144,6 +153,10 @@ ON dbo.Products(CategoryID, Price)
 INCLUDE (ProductName, StockQuantity);
 GO
 
+DBCC FREEPROCCACHE;
+DBCC DROPCLEANBUFFERS;
+GO
+
 SET STATISTICS IO ON;
 
 -- Query fully covered, smaller index
@@ -160,7 +173,7 @@ SELECT
     i.name AS IndexName,
     i.type_desc,
     SUM(ps.used_page_count) * 8 AS IndexSizeKB,
-    SUM(ps.row_count) AS RowCount
+    SUM(ps.row_count) AS [RowCount]
 FROM sys.indexes i
 INNER JOIN sys.dm_db_partition_stats ps ON i.object_id = ps.object_id AND i.index_id = ps.index_id
 WHERE i.object_id = OBJECT_ID('dbo.Products')
@@ -177,8 +190,8 @@ SELECT
 FROM sys.indexes i
 INNER JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
 WHERE i.object_id = OBJECT_ID('dbo.Products')
-  AND i.name = 'IX_Products_Category_Price_INCLUDE'
-ORDER BY ic.key_ordinal, ic.is_included_column;
+  AND i.name IN ('IX_Products_Category_Price_Name', 'IX_Products_Category_Price_INCLUDE')
+ORDER BY i.NAME, ic.key_ordinal, ic.is_included_column;
 GO
 
 -- ============================================================================
@@ -197,15 +210,17 @@ GO
 SET STATISTICS IO ON;
 
 -- Query on active products (uses filtered index)
-SELECT CategoryID, Price, ProductName, StockQuantity
+SELECT TOP (10) CategoryID, Price, ProductName, StockQuantity
 FROM dbo.Products
-WHERE CategoryID = 25 AND IsActive = 1;
+WHERE CategoryID = 25 AND IsActive = 1
+ORDER BY CategoryID, Price;
 -- Result: Uses IX_Products_Active_Category (smaller, more selective)
 
 -- Query on inactive products (cannot use filtered index)
-SELECT CategoryID, Price, ProductName, StockQuantity
+SELECT TOP (10) CategoryID, Price, ProductName, StockQuantity
 FROM dbo.Products
-WHERE CategoryID = 25 AND IsActive = 0;
+WHERE CategoryID = 25 AND IsActive = 0
+ORDER BY CategoryID, Price;
 -- Result: Uses different index or scan
 
 SET STATISTICS IO OFF;
@@ -217,7 +232,7 @@ SELECT
     i.has_filter,
     i.filter_definition,
     SUM(ps.used_page_count) * 8 AS IndexSizeKB,
-    SUM(ps.row_count) AS RowCount
+    SUM(ps.row_count) AS [RowCount]
 FROM sys.indexes i
 INNER JOIN sys.dm_db_partition_stats ps ON i.object_id = ps.object_id AND i.index_id = ps.index_id
 WHERE i.object_id = OBJECT_ID('dbo.Products')
@@ -236,9 +251,10 @@ WHERE LastModifiedDate IS NOT NULL;
 GO
 
 -- Query recent changes
-SELECT ProductID, ProductName, LastModifiedDate
+SELECT TOP (10) ProductID, ProductName, LastModifiedDate
 FROM dbo.Products
-WHERE LastModifiedDate > DATEADD(DAY, -30, GETDATE());
+WHERE LastModifiedDate > DATEADD(DAY, -30, GETDATE())
+ORDER BY LastModifiedDate;
 -- Uses filtered index (much smaller than full index)
 GO
 
@@ -314,7 +330,7 @@ GO
 -- Run a query without a good index
 SELECT ProductName, Price, StockQuantity
 FROM dbo.Products
-WHERE SupplierID = 75 AND Price > 500
+WHERE Price > 500 AND Price < 1000
 ORDER BY CreatedDate DESC;
 -- Check execution plan for missing index suggestion
 GO

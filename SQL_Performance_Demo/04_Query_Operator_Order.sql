@@ -78,18 +78,17 @@ GO
 
 INSERT INTO dbo.Sales (SaleID, EmployeeID, SaleDate, Amount, Region)
 SELECT 
-    number,
-    (number % 1000) + 1,
-    DATEADD(DAY, -(number % 730), GETDATE()),
-    (number % 5000) + 100.00,
-    CASE (number % 4)
+    value,
+    (value % 1000) + 1,
+    DATEADD(DAY, -(value % 730), GETDATE()),
+    (value % 5000) + 100.00,
+    CASE (value % 4)
         WHEN 0 THEN 'North'
         WHEN 1 THEN 'South'
         WHEN 2 THEN 'East'
         ELSE 'West'
     END
-FROM master.dbo.spt_values
-WHERE type = 'P' AND number BETWEEN 1 AND 10000;
+FROM GENERATE_SERIES(1, 10000);
 GO
 
 -- ============================================================================
@@ -162,6 +161,9 @@ SELECT
 FROM dbo.Employees
 WHERE DepartmentID IN (1, 2, 3)  -- Reduce dataset early
 GROUP BY DepartmentID;
+GO
+
+CREATE NONCLUSTERED INDEX IX_Employees_DepartmentID_INCLUDE ON dbo.Employees (DepartmentID) INCLUDE (Salary);
 GO
 
 -- HAVING is for aggregate conditions
