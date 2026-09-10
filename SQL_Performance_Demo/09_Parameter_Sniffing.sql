@@ -109,6 +109,114 @@ GROUP BY Status
 ORDER BY OrderCount DESC;
 GO
 
+DBCC SHOW_STATISTICS
+(
+    'dbo.OrdersForSniffing',
+    'IX_Orders_Status'
+) WITH HISTOGRAM;
+GO
+
+SELECT *
+FROM sys.dm_db_stats_histogram
+(
+    OBJECT_ID('dbo.OrdersForSniffing'),
+    (
+        SELECT stats_id
+        FROM sys.stats
+        WHERE object_id = OBJECT_ID('dbo.OrdersForSniffing')
+          AND name = 'IX_Orders_Status'
+    )
+);
+GO
+
+WITH HistogramData AS
+(
+    SELECT
+        step_number,
+        CAST(equal_rows AS float) AS y
+    FROM sys.dm_db_stats_histogram
+    (
+        OBJECT_ID('dbo.OrdersForSniffing'),
+        (
+            SELECT stats_id
+            FROM sys.stats
+            WHERE object_id = OBJECT_ID('dbo.OrdersForSniffing')
+              AND name = 'IX_Orders_Status'
+        )
+    )
+),
+Points AS
+(
+    SELECT
+        STRING_AGG(
+            CONCAT(step_number, ' ', y),
+            ','
+        ) WITHIN GROUP (ORDER BY step_number) AS WKT
+    FROM HistogramData
+)
+SELECT geometry::STGeomFromText(
+    'LINESTRING(' + WKT + ')',
+    0
+) AS Histogram
+FROM Points;
+GO
+
+-- ============================================================================
+-- 0. DIFFERENT QUERIES
+-- ============================================================================
+
+DBCC FREEPROCCACHE;
+GO
+
+SELECT OrderID, CustomerID, OrderDate, Amount, Status
+FROM dbo.OrdersForSniffing
+WHERE Status = 'Cancelled';
+GO
+
+SELECT OrderID, CustomerID, OrderDate, Amount, Status
+FROM dbo.OrdersForSniffing
+WHERE Status = 'Completed';
+GO
+
+SELECT OrderID, CustomerID, OrderDate, Amount, Status
+FROM dbo.OrdersForSniffing
+WHERE Status = 'Pending';
+GO
+
+SELECT OrderID, CustomerID, OrderDate, Amount, Status
+FROM dbo.OrdersForSniffing
+WHERE Status = 'Cancelled';
+GO
+
+SELECT
+    OrderID,
+    CustomerID,
+    OrderDate,
+    Amount,
+    Status
+
+FROM dbo.OrdersForSniffing
+WHERE Status = 'Pending';
+GO
+
+WITH Queries AS
+(
+    SELECT TOP (100) PERCENT
+        qs.last_execution_time,
+        qs.execution_count,
+        DB_NAME(st.dbid) AS DatabaseName,
+        st.text,
+        qp.query_plan
+    FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+    WHERE st.text LIKE '%dbo.OrdersForSniffing%'
+    ORDER BY qs.last_execution_time DESC
+)
+SELECT *
+FROM Queries;
+GO
+
 -- ============================================================================
 -- 1. DEMONSTRATE PARAMETER SNIFFING PROBLEM
 -- ============================================================================
@@ -160,6 +268,24 @@ SET STATISTICS TIME OFF;
 SET STATISTICS IO OFF;
 GO
 
+WITH Queries AS
+(
+    SELECT TOP (100) PERCENT
+        qs.last_execution_time,
+        qs.execution_count,
+        DB_NAME(st.dbid) AS DatabaseName,
+        st.text,
+        qp.query_plan
+    FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+    WHERE st.text LIKE '%dbo.OrdersForSniffing%'
+    ORDER BY qs.last_execution_time DESC
+)
+SELECT *
+FROM Queries;
+GO
+
 -- Now reverse the order to see opposite problem
 PRINT '=== Reverse scenario: Start with Completed ===';
 DBCC FREEPROCCACHE;
@@ -179,6 +305,24 @@ GO
 
 SET STATISTICS TIME OFF;
 SET STATISTICS IO OFF;
+GO
+
+WITH Queries AS
+(
+    SELECT TOP (100) PERCENT
+        qs.last_execution_time,
+        qs.execution_count,
+        DB_NAME(st.dbid) AS DatabaseName,
+        st.text,
+        qp.query_plan
+    FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+    WHERE st.text LIKE '%dbo.OrdersForSniffing%'
+    ORDER BY qs.last_execution_time DESC
+)
+SELECT *
+FROM Queries;
 GO
 
 -- ============================================================================
@@ -437,6 +581,8 @@ GO
 -- 9. SQL SERVER 2022: Parameter Sensitive Plan (PSP) Optimization
 -- ============================================================================
 
+/* --> Go to demo @10, then come back
+
 PRINT '========== SQL SERVER 2022: Parameter Sensitive Plans ==========';
 GO
 
@@ -446,8 +592,32 @@ FROM sys.databases
 WHERE database_id = DB_ID();
 GO
 
+SELECT
+    name,
+    value,
+    value_for_secondary
+FROM sys.database_scoped_configurations
+WHERE name = 'PARAMETER_SENSITIVE_PLAN_OPTIMIZATION';
+GO
+
 -- Enable PSP for database (SQL Server 2022+)
 -- ALTER DATABASE SCOPED CONFIGURATION SET PARAMETER_SENSITIVE_PLAN_OPTIMIZATION = ON;
+GO
+
+CHECKPOINT;
+GO
+
+DBCC DROPCLEANBUFFERS;
+DBCC FREEPROCCACHE;
+GO
+
+EXEC dbo.GetOrdersByStatus 'Cancelled';
+GO
+
+EXEC dbo.GetOrdersByStatus 'Pending';
+GO
+
+EXEC dbo.GetOrdersByStatus 'Complete';
 GO
 
 -- Create procedure without hints (let PSP handle it)
@@ -465,8 +635,70 @@ BEGIN
 END
 GO
 
+ALTER TABLE dbo.OrdersForSniffing
+ADD Comments char(500) NULL;
+GO
+
+UPDATE dbo.OrdersForSniffing
+SET Comments = REPLICATE('X',500);
+GO
+
+-- Update statistics
+UPDATE STATISTICS dbo.OrdersForSniffing WITH FULLSCAN;
+GO
+
+ALTER DATABASE CURRENT SET COMPATIBILITY_LEVEL = 170;
+GO
+
+CHECKPOINT;
+GO
+
+DBCC DROPCLEANBUFFERS;
+DBCC FREEPROCCACHE;
+GO
+
 -- SQL Server 2022 will detect the parameter sensitivity and create
 -- multiple plans automatically (if enabled and supported)
+
+EXEC dbo.GetOrdersByStatus_PSP @Status = 'Cancelled';   -- Uses SmallSet procedure
+EXEC dbo.GetOrdersByStatus_PSP @Status = 'Completed';   -- Uses LargeSet procedure
+EXEC dbo.GetOrdersByStatus_PSP @Status = 'Pending';   -- Uses LargeSet procedure
+GO
+
+SELECT
+    st.text,
+    qp.query_plan
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+WHERE st.text LIKE '%GetOrdersByStatus%';
+
+SELECT
+    qs.last_execution_time,
+    st.text,
+    qp.query_plan
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+WHERE st.text LIKE '%GetOrdersByStatus%';
+GO
+
+SELECT
+    qsq.query_id,
+    qsp.plan_id,
+    qsp.is_forced_plan,
+    rs.count_executions,
+    rs.avg_duration,
+    rs.last_execution_time
+FROM sys.query_store_query qsq
+JOIN sys.query_store_plan qsp
+    ON qsq.query_id = qsp.query_id
+JOIN sys.query_store_runtime_stats rs
+    ON qsp.plan_id = rs.plan_id
+ORDER BY qsq.query_id,
+         qsp.plan_id;
+
+*/
 
 -- ============================================================================
 -- 10. DETECTION: Finding Parameter Sniffing Issues
@@ -608,17 +840,17 @@ GO
 -- CLEANUP (Optional)
 -- ============================================================================
 /*
-DROP PROCEDURE dbo.GetOrdersByStatus;
-DROP PROCEDURE dbo.GetOrdersByStatus_OptimizeFor;
-DROP PROCEDURE dbo.GetOrdersByStatus_OptimizeForUnknown;
-DROP PROCEDURE dbo.GetOrdersByStatus_Recompile;
-DROP PROCEDURE dbo.GetOrdersByStatus_QueryRecompile;
-DROP PROCEDURE dbo.GetOrdersByStatus_LocalVar;
-DROP PROCEDURE dbo.GetOrdersByStatus_DynamicSQL;
-DROP PROCEDURE dbo.GetOrdersByStatus_SmallSet;
-DROP PROCEDURE dbo.GetOrdersByStatus_LargeSet;
-DROP PROCEDURE dbo.GetOrdersByStatus_Branching;
-DROP PROCEDURE dbo.GetOrdersByStatus_PSP;
-DROP TABLE dbo.OrdersForSniffing;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_OptimizeFor;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_OptimizeForUnknown;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_Recompile;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_QueryRecompile;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_LocalVar;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_DynamicSQL;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_SmallSet;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_LargeSet;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_Branching;
+DROP PROCEDURE IF EXISTS dbo.GetOrdersByStatus_PSP;
+DROP TABLE IF EXISTS dbo.OrdersForSniffing;
 GO
 */
